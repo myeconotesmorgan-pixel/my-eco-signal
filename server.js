@@ -1,57 +1,66 @@
 const WebSocket = require('ws');
 const http = require('http');
-const url = require('url'); // 引入 URL 解析工具
 
-const port = process.env.PORT || 10000; // Render 預設通常是 10000
+const port = process.env.PORT || 10000;
 
 const server = http.createServer((req, res) => {
   res.writeHead(200);
-  res.end('Eco-Signaling Server is Running');
+  res.end('Signaling Server Active');
 });
 
 const wss = new WebSocket.Server({ server });
+
+// 房間管理：Map<RoomName, Set<WebSocket>>
 const rooms = new Map();
 
 wss.on('connection', (conn, req) => {
-  // --- 強化路徑解析邏輯 ---
-  const parsedUrl = url.parse(req.url, true);
-  const pathRoom = parsedUrl.pathname ? parsedUrl.pathname.slice(1) : '';
-  const queryRoom = parsedUrl.query ? parsedUrl.query.room : '';
+  // 解析房間名稱 (路徑)
+  const roomName = req.url.slice(1) || 'default';
   
-  // 優先取路徑，若無則取參數，最後才給 default
-  const roomName = pathRoom || queryRoom || 'default-room';
-  
-  console.log(`[連線成功] 房間: ${roomName} (完整網址: ${req.url})`);
-
   if (!rooms.has(roomName)) {
     rooms.set(roomName, new Set());
   }
   const clients = rooms.get(roomName);
   clients.add(conn);
 
-  // 心跳包
-  const pingInterval = setInterval(() => {
-    if (conn.readyState === WebSocket.OPEN) {
-      conn.ping();
-    }
-  }, 30000);
+  console.log(`[加入] 房間: ${roomName} | 目前人數: ${clients.size}`);
 
-  conn.on('message', (data) => {
+  // 定時心跳探測，防止伺服器端超時
+  conn.isAlive = true;
+  conn.on('pong', () => { conn.isAlive = true; });
+
+  conn.on('message', (message) => {
+    // 收到訊息後，只轉發給「同房間」的「其他」客戶端
     clients.forEach((client) => {
       if (client !== conn && client.readyState === WebSocket.OPEN) {
-        client.send(data);
+        // 直接轉發原始 Buffer 資料，不進行轉碼，確保 Yjs 協定完整
+        client.send(message, { binary: true });
       }
     });
   });
 
   conn.on('close', () => {
-    console.log(`[連線中斷] 房間: ${roomName}`);
     clients.delete(conn);
-    if (clients.size === 0) rooms.delete(roomName);
-    clearInterval(pingInterval);
+    console.log(`[退出] 房間: ${roomName} | 剩餘人數: ${clients.size}`);
+    if (clients.size === 0) {
+      rooms.delete(roomName);
+    }
+  });
+
+  conn.on('error', (err) => {
+    console.error(`[錯誤] ${roomName}: ${err.message}`);
   });
 });
 
+// 定期清理斷線客戶端
+const interval = setInterval(() => {
+  wss.clients.forEach((conn) => {
+    if (conn.isAlive === false) return conn.terminate();
+    conn.isAlive = false;
+    conn.ping();
+  });
+}, 30000);
+
 server.listen(port, '0.0.0.0', () => {
-  console.log(`伺服器啟動於 Port ${port}`);
+  console.log(`Signaling server running on port ${port}`);
 });

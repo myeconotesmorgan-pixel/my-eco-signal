@@ -3,35 +3,60 @@ const http = require('http');
 
 const port = process.env.PORT || 3000;
 
-// 建立一個 HTTP 伺服器
 const server = http.createServer((req, res) => {
-  // 診斷：紀錄所有進入伺服器的 HTTP 請求
-  console.log(`[HTTP Request] ${req.method} ${req.url}`);
   res.writeHead(200);
-  res.end('Signaling server is alive');
+  res.end('Eco-Signaling Server is Running');
 });
 
 const wss = new WebSocket.Server({ server });
 
-wss.on('connection', (conn, req) => {
-  // 診斷：紀錄 WebRTC 的連線嘗試
-  console.log(`[WS Connect] 收到連線請求，路徑: ${req.url}`);
+// 儲存房間內的客戶端
+const rooms = new Map();
 
-  // y-webrtc 傳入的路徑通常是 /roomName
-  const roomName = req.url.slice(1) || 'default';
+wss.on('connection', (conn, req) => {
+  // 解析路徑作為房間名，如果只有 / 就給予預設值
+  const rawPath = req.url.slice(1);
+  const roomName = rawPath && rawPath !== '' ? rawPath : 'default-room';
   
-  conn.on('message', message => {
-    wss.clients.forEach(client => {
+  console.log(`[連線成功] 房間: ${roomName} (原始路徑: ${req.url})`);
+
+  // 將連線加入房間
+  if (!rooms.has(roomName)) {
+    rooms.set(roomName, new Set());
+  }
+  const clients = rooms.get(roomName);
+  clients.add(conn);
+
+  // 定時發送 Ping 防止 Render 休眠/斷線
+  const pingInterval = setInterval(() => {
+    if (conn.readyState === WebSocket.OPEN) {
+      conn.ping();
+    }
+  }, 30000);
+
+  conn.on('message', (data) => {
+    // 收到訊息，只轉發給同房間的其他隊友
+    clients.forEach((client) => {
       if (client !== conn && client.readyState === WebSocket.OPEN) {
-        client.send(message);
+        client.send(data);
       }
     });
   });
 
-  conn.on('close', () => console.log(`[WS Close] 連線已斷開`));
-  conn.on('error', (err) => console.error(`[WS Error] ${err}`));
+  conn.on('close', () => {
+    console.log(`[連線中斷] 房間: ${roomName}`);
+    clients.delete(conn);
+    if (clients.size === 0) {
+      rooms.delete(roomName);
+    }
+    clearInterval(pingInterval);
+  });
+
+  conn.on('error', (err) => {
+    console.error(`[連線錯誤] ${err.message}`);
+  });
 });
 
 server.listen(port, () => {
-  console.log(`Server is listening on port ${port}`);
+  console.log(`伺服器已啟動於 Port ${port}`);
 });

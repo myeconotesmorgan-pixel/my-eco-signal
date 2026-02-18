@@ -1,53 +1,37 @@
-const WebSocket = require('ws')
-const http = require('http')
+const WebSocket = require('ws');
+const http = require('http');
 
-const host = process.env.HOST || '0.0.0.0'
-const port = process.env.PORT || 3000
+const port = process.env.PORT || 3000;
 
-// 建立一個房間管理地圖
-const rooms = new Map()
+// 建立一個 HTTP 伺服器
+const server = http.createServer((req, res) => {
+  // 診斷：紀錄所有進入伺服器的 HTTP 請求
+  console.log(`[HTTP Request] ${req.method} ${req.url}`);
+  res.writeHead(200);
+  res.end('Signaling server is alive');
+});
 
-const server = http.createServer((request, response) => {
-  response.writeHead(200, { 'Content-Type': 'text/plain' })
-  response.end('Signaling server is running')
-})
-
-const wss = new WebSocket.Server({ noServer: true })
+const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (conn, req) => {
-  // 從 URL 取得房間名稱 (例如 /room123)
-  const roomName = req.url.slice(1)
-  let room = rooms.get(roomName)
-  if (room === undefined) {
-    room = new Set()
-    rooms.set(roomName, room)
-  }
-  room.add(conn)
+  // 診斷：紀錄 WebRTC 的連線嘗試
+  console.log(`[WS Connect] 收到連線請求，路徑: ${req.url}`);
+
+  // y-webrtc 傳入的路徑通常是 /roomName
+  const roomName = req.url.slice(1) || 'default';
   
-  // 當收到訊息時，廣播給同一個房間的其他所有人
   conn.on('message', message => {
-    room.forEach(client => {
+    wss.clients.forEach(client => {
       if (client !== conn && client.readyState === WebSocket.OPEN) {
-        client.send(message)
+        client.send(message);
       }
-    })
-  })
+    });
+  });
 
-  // 當連線中斷時，從房間移除
-  conn.on('close', () => {
-    room.delete(conn)
-    if (room.size === 0) {
-      rooms.delete(roomName)
-    }
-  })
-})
+  conn.on('close', () => console.log(`[WS Close] 連線已斷開`));
+  conn.on('error', (err) => console.error(`[WS Error] ${err}`));
+});
 
-server.on('upgrade', (request, socket, head) => {
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request)
-  })
-})
-
-server.listen(port, host, () => {
-  console.log(`running at '${host}' on port ${port}`)
-})
+server.listen(port, () => {
+  console.log(`Server is listening on port ${port}`);
+});

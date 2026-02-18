@@ -1,7 +1,8 @@
 const WebSocket = require('ws');
 const http = require('http');
+const url = require('url'); // 引入 URL 解析工具
 
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 10000; // Render 預設通常是 10000
 
 const server = http.createServer((req, res) => {
   res.writeHead(200);
@@ -9,25 +10,26 @@ const server = http.createServer((req, res) => {
 });
 
 const wss = new WebSocket.Server({ server });
-
-// 儲存房間內的客戶端
 const rooms = new Map();
 
 wss.on('connection', (conn, req) => {
-  // 解析路徑作為房間名，如果只有 / 就給予預設值
-  const rawPath = req.url.slice(1);
-  const roomName = rawPath && rawPath !== '' ? rawPath : 'default-room';
+  // --- 強化路徑解析邏輯 ---
+  const parsedUrl = url.parse(req.url, true);
+  const pathRoom = parsedUrl.pathname ? parsedUrl.pathname.slice(1) : '';
+  const queryRoom = parsedUrl.query ? parsedUrl.query.room : '';
   
-  console.log(`[連線成功] 房間: ${roomName} (原始路徑: ${req.url})`);
+  // 優先取路徑，若無則取參數，最後才給 default
+  const roomName = pathRoom || queryRoom || 'default-room';
+  
+  console.log(`[連線成功] 房間: ${roomName} (完整網址: ${req.url})`);
 
-  // 將連線加入房間
   if (!rooms.has(roomName)) {
     rooms.set(roomName, new Set());
   }
   const clients = rooms.get(roomName);
   clients.add(conn);
 
-  // 定時發送 Ping 防止 Render 休眠/斷線
+  // 心跳包
   const pingInterval = setInterval(() => {
     if (conn.readyState === WebSocket.OPEN) {
       conn.ping();
@@ -35,7 +37,6 @@ wss.on('connection', (conn, req) => {
   }, 30000);
 
   conn.on('message', (data) => {
-    // 收到訊息，只轉發給同房間的其他隊友
     clients.forEach((client) => {
       if (client !== conn && client.readyState === WebSocket.OPEN) {
         client.send(data);
@@ -46,17 +47,11 @@ wss.on('connection', (conn, req) => {
   conn.on('close', () => {
     console.log(`[連線中斷] 房間: ${roomName}`);
     clients.delete(conn);
-    if (clients.size === 0) {
-      rooms.delete(roomName);
-    }
+    if (clients.size === 0) rooms.delete(roomName);
     clearInterval(pingInterval);
-  });
-
-  conn.on('error', (err) => {
-    console.error(`[連線錯誤] ${err.message}`);
   });
 });
 
-server.listen(port, () => {
-  console.log(`伺服器已啟動於 Port ${port}`);
+server.listen(port, '0.0.0.0', () => {
+  console.log(`伺服器啟動於 Port ${port}`);
 });

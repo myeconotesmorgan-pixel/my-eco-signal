@@ -1,10 +1,12 @@
-// Server Version: 6.0.2 - Update at 2026-02-20
 const WebSocket = require('ws');
 const http = require('http');
 
 const port = process.env.PORT || 10000;
 
 const server = http.createServer((req, res) => {
+  // 🔴 這裡增加了紀錄，這樣手機瀏覽器打開網址時，Log 就會跳動！
+  console.log(`[網頁存取] 收到來自 ${req.headers['x-forwarded-for'] || req.socket.remoteAddress} 的請求`);
+  
   res.writeHead(200);
   res.end('Eco-Signaling Server Active');
 });
@@ -12,31 +14,21 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocket.Server({ server });
 const rooms = new Map();
 
-// 監聽連線
 wss.on('connection', (conn, req) => {
-  // --- [萬能路徑解析] ---
-  // 從網址中抓取最後一個斜線後的內容作為房間名，並過濾掉特殊字元
-  const urlParts = req.url.split('/');
-  let roomName = urlParts[urlParts.length - 1] || 'default';
+  // WebSocket 的路徑解析
+  const roomName = req.url.slice(1) || 'default';
   
-  // 處理可能帶有的查詢參數 (例如 ?room=)
-  if (roomName.includes('?')) {
-    const params = new URLSearchParams(roomName.split('?')[1]);
-    roomName = params.get('room') || roomName.split('?')[0];
-  }
-
   if (!rooms.has(roomName)) {
     rooms.set(roomName, new Set());
   }
   const clients = rooms.get(roomName);
   clients.add(conn);
 
-  console.log(`[連線成功] 房間: ${roomName} | 完整路徑: ${req.url}`);
+  console.log(`[WS連線] 房間: ${roomName} | 目前人數: ${clients.size}`);
 
   conn.on('message', (message) => {
     clients.forEach((client) => {
       if (client !== conn && client.readyState === WebSocket.OPEN) {
-        // 必須以 binary 模式傳送 yjs 資料
         client.send(message, { binary: true });
       }
     });
@@ -44,17 +36,11 @@ wss.on('connection', (conn, req) => {
 
   conn.on('close', () => {
     clients.delete(conn);
+    console.log(`[WS退出] 房間: ${roomName}`);
     if (clients.size === 0) rooms.delete(roomName);
-    console.log(`[連線中斷] 房間: ${roomName}`);
   });
-
-  // 強制保活
-  const ping = setInterval(() => {
-    if (conn.readyState === WebSocket.OPEN) conn.ping();
-    else clearInterval(ping);
-  }, 30000);
 });
 
 server.listen(port, '0.0.0.0', () => {
-  console.log(`Server v6 is running on port ${port}`);
+  console.log(`Server v6.0.4 is running on port ${port}`);
 });

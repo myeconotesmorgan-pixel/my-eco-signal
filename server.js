@@ -1,3 +1,4 @@
+// Server Version: 6.0.2 - Update at 2026-02-20
 const WebSocket = require('ws');
 const http = require('http');
 

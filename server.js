@@ -1,34 +1,82 @@
 const WebSocket = require('ws');
 const http = require('http');
+const { URL } = require('url');
 
 const port = process.env.PORT || 10000;
 
+// 儲存房間 (topic) 內的客戶端 (WebSocket 連線)
+const topics = new Map();
+
 // 建立 HTTP 伺服器
-const server = http.createServer((request, response) => {
-  response.writeHead(200, { 'Content-Type': 'text/plain' });
-  response.end('Eco-Signaling Server Active (Official Protocol)');
+const server = http.createServer((req, res) => {
+  // 設定 CORS，讓手機端能順利發送 POST
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  // 處理 Preflight 請求
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  // ★ 新增：背景座標廣播 API (HTTP POST)
+  if (req.url === '/api/location' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('end', () => {
+      try {
+          const { roomId, payload } = JSON.parse(body);
+          
+          if (roomId && payload) {
+              const receivers = topics.get(roomId);
+              if (receivers) {
+                  // 找到房間內的所有在線隊友，把加密座標塞給他們的 WebSocket
+                  const broadcastMsg = JSON.stringify({
+                      type: 'TEAM_LOCATION_UPDATE',
+                      data: payload // 這是加密過的亂碼，伺服器直接轉發
+                  });
+                  
+                  receivers.forEach(client => {
+                      if (client.readyState === WebSocket.OPEN) {
+                          client.send(broadcastMsg);
+                      }
+                  });
+              }
+              res.writeHead(200, { 'Content-Type': 'text/plain' });
+              res.end('Broadcast successful');
+          } else {
+              res.writeHead(400);
+              res.end('Missing roomId or payload');
+          }
+      } catch (e) {
+          res.writeHead(400);
+          res.end('Invalid JSON');
+      }
+    });
+    return;
+  }
+
+  // 原有的基本回應
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Eco-Signaling Server Active with BG Support');
 });
 
 const wss = new WebSocket.Server({ server });
 
-// 儲存房間 (topic) 內的客戶端
-const topics = new Map();
-
 // 安全發送 JSON 訊息的工具
 const send = (conn, message) => {
-  if (conn.readyState !== WebSocket.CONNECTING && conn.readyState !== WebSocket.OPEN) {
-    conn.close();
-    return;
-  }
-  try {
-    conn.send(JSON.stringify(message));
-  } catch (e) {
-    conn.close();
+  if (conn.readyState === WebSocket.OPEN) {
+    try {
+      conn.send(JSON.stringify(message));
+    } catch (e) {
+      conn.close();
+    }
   }
 };
 
 wss.on('connection', conn => {
-  // 紀錄這個連線訂閱了哪些房間
   const subscribedTopics = new Set();
   let isAlive = true;
 
@@ -37,16 +85,12 @@ wss.on('connection', conn => {
   conn.on('message', messageStr => {
     let message;
     try {
-      // 破案關鍵：y-webrtc 的信號全都是 JSON 字串！
       message = JSON.parse(messageStr);
-    } catch (e) {
-      return; // 忽略非 JSON 訊息
-    }
+    } catch (e) { return; }
 
     if (message && message.type) {
       switch (message.type) {
         case 'subscribe':
-          // 真正的房間名稱 (topic) 藏在這裡！
           (message.topics || []).forEach(topicName => {
             subscribedTopics.add(topicName);
             let receivers = topics.get(topicName);
@@ -55,35 +99,20 @@ wss.on('connection', conn => {
               topics.set(topicName, receivers);
             }
             receivers.add(conn);
-            console.log(`[WS加入] 成功解析房間: ${topicName} | 目前人數: ${receivers.size}`);
-          });
-          break;
-        case 'unsubscribe':
-          (message.topics || []).forEach(topicName => {
-            subscribedTopics.delete(topicName);
-            const receivers = topics.get(topicName);
-            if (receivers) {
-              receivers.delete(conn);
-              if (receivers.size === 0) topics.delete(topicName);
-            }
+            console.log(`[加入房間] ${topicName} | 人數: ${receivers.size}`);
           });
           break;
         case 'publish':
-          // 轉發 P2P 握手訊號給同房間的其他人
           if (message.topic) {
             const receivers = topics.get(message.topic);
             if (receivers) {
-              message.clients = receivers.size;
               receivers.forEach(receiver => {
-                if (receiver !== conn) {
-                  send(receiver, message);
-                }
+                if (receiver !== conn) send(receiver, message);
               });
             }
           }
           break;
         case 'ping':
-          // ★★★ 防止斷線迴圈的關鍵！回傳 pong 給手機 ★★★
           send(conn, { type: 'pong' });
           break;
       }
@@ -95,19 +124,13 @@ wss.on('connection', conn => {
       const receivers = topics.get(topicName);
       if (receivers) {
         receivers.delete(conn);
-        console.log(`[WS退出] 房間: ${topicName} | 剩餘人數: ${receivers.size}`);
         if (receivers.size === 0) topics.delete(topicName);
       }
     });
-    subscribedTopics.clear();
   });
   
-  // Render 免費版防休眠心跳
   const pingInterval = setInterval(() => {
-    if (!isAlive) {
-      clearInterval(pingInterval);
-      return conn.terminate();
-    }
+    if (!isAlive) return conn.terminate();
     isAlive = false;
     conn.ping();
   }, 30000);
@@ -116,5 +139,5 @@ wss.on('connection', conn => {
 });
 
 server.listen(port, '0.0.0.0', () => {
-  console.log(`Signaling server running on port ${port} with Official Protocol`);
+  console.log(`Server running on port ${port} with BG Support`);
 });

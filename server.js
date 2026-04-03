@@ -1,11 +1,15 @@
 const WebSocket = require('ws');
 const http = require('http');
 const { URL } = require('url');
+const axios = require('axios'); // ★ 新增：用來向 EcoBot 發射保活訊號
 
 const port = process.env.PORT || 10000;
 
 // 儲存房間 (topic) 內的客戶端 (WebSocket 連線)
 const topics = new Map();
+
+// ★ 新增：儲存已註冊的留守機器人 (RoomName -> BotURL)
+const activeBots = new Map(); 
 
 // 建立 HTTP 伺服器
 const server = http.createServer((req, res) => {
@@ -21,7 +25,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ★ 新增：背景座標廣播 API (HTTP POST)
+  // ★ 原有功能：背景座標廣播 API
   if (req.url === '/api/location' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => { body += chunk.toString(); });
@@ -32,10 +36,9 @@ const server = http.createServer((req, res) => {
           if (roomId && payload) {
               const receivers = topics.get(roomId);
               if (receivers) {
-                  // 找到房間內的所有在線隊友，把加密座標塞給他們的 WebSocket
                   const broadcastMsg = JSON.stringify({
                       type: 'TEAM_LOCATION_UPDATE',
-                      data: payload // 這是加密過的亂碼，伺服器直接轉發
+                      data: payload
                   });
                   
                   receivers.forEach(client => {
@@ -58,9 +61,33 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ★ 新增功能：EcoBot 報到櫃台
+  if (req.url === '/register-bot' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('end', () => {
+      try {
+        const { roomName, botUrl } = JSON.parse(body);
+        if (roomName && botUrl) {
+          activeBots.set(roomName, botUrl);
+          console.log(`[母艦雷達] 🤖 發現 EcoBot 報到！房間：${roomName} | 網址：${botUrl}`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: 'Bot registered' }));
+        } else {
+          res.writeHead(400);
+          res.end('Missing roomName or botUrl');
+        }
+      } catch (e) {
+        res.writeHead(400);
+        res.end('Invalid JSON');
+      }
+    });
+    return;
+  }
+
   // 原有的基本回應
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Eco-Signaling Server Active with BG Support');
+  res.end('Eco-Signaling Server Active with BG Support & Bot Commander');
 });
 
 const wss = new WebSocket.Server({ server });
@@ -138,6 +165,28 @@ wss.on('connection', conn => {
   conn.on('close', () => clearInterval(pingInterval));
 });
 
+// ============================================================================
+// ★ 新增功能：母艦指揮官的保活巡邏系統 (每 8 分鐘執行一次)
+// ============================================================================
+// Render 的免費機器人 15 分鐘沒動靜會睡著，我們每 8 分鐘去敲一次門
+setInterval(async () => {
+  if (activeBots.size === 0) return;
+
+  console.log(`[母艦巡邏] 正在巡視 ${activeBots.size} 台服役中的 EcoBot...`);
+  
+  for (const [roomName, botUrl] of activeBots.entries()) {
+    try {
+      // 對機器人的 /ping 發射請求
+      await axios.get(`${botUrl}/ping`);
+      console.log(`  ✅ [保活成功] ${roomName} 持續守衛中`);
+    } catch (error) {
+      console.log(`  ❌ [失聯警告] ${roomName} 的機器人無回應，已從雷達剔除`);
+      // 如果機器人被隊長手動刪除或發生異常，把它從名單移除，避免一直戳浪費資源
+      activeBots.delete(roomName);
+    }
+  }
+}, 8 * 60 * 1000);
+
 server.listen(port, '0.0.0.0', () => {
-  console.log(`Server running on port ${port} with BG Support`);
+  console.log(`Server running on port ${port} with BG Support & Bot Commander`);
 });
